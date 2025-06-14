@@ -10,99 +10,157 @@ from langchain.llms import HuggingFaceHub
 import os
 import json
 import math
+import csv
+import re
+from datetime import datetime
 
+# Hugging Face API token from environment variable
+hf_token = os.getenv("HUGGINGFACE_TOKEN")
 
-# Hugging Face API token
-hf_token = os.getenv("HUGGINGFACE_API_TOKEN")
 
 # Metadata extractor using Hugging Face Inference API
 meta_llm = InferenceClient(model="HuggingFaceH4/zephyr-7b-beta",
                            token=hf_token)
 
-# def extract_metadata(text: str):
-#     prompt = f"""<|system|>
-# You are a financial document analyzer. Extract metadata as JSON.
+def get_rightmost_value(row):
+    """Get the rightmost non-empty value from a row, skipping the first two columns."""
+    # Skip the first two columns (label and notes) and get the rightmost value
+    for value in reversed(row[2:]):
+        if value and value.strip():
+            return value.strip()
+    return None
 
-# <|user|>
-# Extract company name, report date, and currency from this financial document:
-
-# {text[:1000]}
-
-# Return only JSON format like: {{"Company": "...", "Date": "...", "Currency": "..."}}
-
-# <|assistant|>
-# """
-    
-#     try:
-#         response = meta_llm.text_generation(
-#             prompt, 
-#             max_new_tokens=150,
-#             temperature=0.1,
-#             do_sample=False,
-#             repetition_penalty=1.1
-#         )
-        
-#         print(f"API Response: {response}")
-        
-#         # Find JSON in response
-#         json_start = response.find('{')
-#         json_end = response.rfind('}') + 1
-        
-#         if json_start != -1 and json_end > json_start:
-#             json_str = response[json_start:json_end]
-#             metadata_json = json.loads(json_str)
-#             return metadata_json
-#         else:
-#             raise ValueError("No JSON found")
-            
-#     except Exception as e:
-#         print(f"API Error: {e}")
-#         # Return default metadata if API fails
-#         import re
-        
-#         # Try basic regex extraction as fallback
-#         company_match = re.search(r'(?:company|corp|inc|ltd)[:\s]+([^\n\.]+)', text[:1000], re.IGNORECASE)
-#         company = company_match.group(1).strip() if company_match else "Unknown Company"
-        
-#         return {
-#             "Company": company,
-#             "Date": "Unknown",
-#             "Currency": "USD"
-#         }
-
-def extract_metadata(text: str):
-    prompt = f"""<|system|>
-    You are a financial document analyzer. Extract metadata as JSON.
-
-    <|user|>
-    Extract company name, report date, and currency from this financial document:
-
-    {text[:1000]}
-
-    Return only JSON format like: {{"Company": "...", "Date": "...", "Currency": "..."}}
-
-    <|assistant|>
-    """
-
-    
-    response = meta_llm.text_generation(
-            prompt, 
-        )
-    print(response)
+def parse_date(date_str):
+    """Parse date string in format 'MMM. DD, YYYY'."""
     try:
-        json_start = response.find('{')
-        json_end = response.rfind('}') + 1
-        metadata_json = json.loads(response[json_start:json_end])
-        return metadata_json
+        return datetime.strptime(date_str, '%b. %d, %Y')
     except:
-        return {"Company": None, "Date": None, "Currency": None}
+        return None
+
+def get_latest_date_column(rows):
+    """Find the column index of the later date in the header row."""
+    if not rows or len(rows) < 2:
+        return -1
+    
+    header = rows[0]
+    dates = []
+    
+    # Find all date columns
+    for i, cell in enumerate(header):
+        if isinstance(cell, str):
+            date = parse_date(cell)
+            if date:
+                dates.append((i, date))
+    
+    # If we found dates, return the column with the later date
+    if len(dates) >= 2:
+        dates.sort(key=lambda x: x[1], reverse=True)  # Sort by date, most recent first
+        return dates[0][0]  # Return column index of most recent date
+    
+    return -1
+
+def get_value_from_latest_date(row, latest_date_col):
+    """Get the value from the column with the latest date."""
+    if latest_date_col >= 0 and len(row) > latest_date_col:
+        value = row[latest_date_col].strip()
+        return value if value else None
+    return None
+
+def extract_metadata_from_structure(file_path: str) -> dict:
+    """Extract metadata from directory structure and CSV files."""
+    # Get the base directory (Statements)
+    base_dir = os.path.join(os.getcwd(), "Statements")
+    
+    # Initialize metadata with default values
+    metadata = {
+        "Country": None,
+        "Company": None,
+        "Total Assets": None,
+        "Total Liabilities": None,
+        "Total Equity": None,
+        "Retained Earnings": None
+    }
+    
+    # Search through the Statements directory to find matching files
+    for country in os.listdir(base_dir):
+        country_path = os.path.join(base_dir, country)
+        if not os.path.isdir(country_path) or country.startswith('.'):
+            continue
+            
+        for company in os.listdir(country_path):
+            company_path = os.path.join(country_path, company)
+            if not os.path.isdir(company_path) or company.startswith('.'):
+                continue
+                
+            # Check if this company's directory contains our file
+            if os.path.exists(os.path.join(company_path, "markdown", file_path)):
+                metadata["Country"] = country
+                metadata["Company"] = company
+                break
+        if metadata["Country"]:
+            break
+    
+    # Get the corresponding parsed tables directory
+    if metadata["Country"] and metadata["Company"]:
+        company_parsed_dir = os.path.join(os.getcwd(), "parsed_tables", metadata["Country"], metadata["Company"])
+        print(f"\nSearching for CSVs in: {company_parsed_dir}")
+        if os.path.exists(company_parsed_dir):
+            for root, dirs, files in os.walk(company_parsed_dir):
+                for filename in files:
+                    if filename.endswith(".csv"):
+                        csv_path = os.path.join(root, filename)
+                        try:
+                            with open(csv_path, 'r', encoding='utf-8') as f:
+                                reader = csv.reader(f)
+                                rows = list(reader)
+                                # Extract financial metrics
+                                latest_date_col = get_latest_date_column(rows)
+                                print(f"Latest date column: {latest_date_col}")  # Debug print
+                                for row in rows:
+                                    row_str = str(row[0]).lower() if row else ""
+                                    if "total assets" in row_str and metadata["Total Assets"] is None:
+                                        print(f"Found row with Total assets: {row}")
+                                        value = get_value_from_latest_date(row, latest_date_col)
+                                        print(f"Value found: {value}")
+                                        if value:
+                                            metadata["Total Assets"] = value
+                                            print(f"Found and stored Total assets: {value}")
+                                    elif "total liabilities" in row_str and metadata["Total Liabilities"] is None:
+                                        print(f"Found row with Total liabilities: {row}")
+                                        value = get_value_from_latest_date(row, latest_date_col)
+                                        print(f"Value found: {value}")
+                                        if value:
+                                            metadata["Total Liabilities"] = value
+                                            print(f"Found and stored Total liabilities: {value}")
+                                    elif "total equity" in row_str and metadata["Total Equity"] is None:
+                                        print(f"Found row with Total equity: {row}")
+                                        value = get_value_from_latest_date(row, latest_date_col)
+                                        if value:
+                                            metadata["Total Equity"] = value
+                                            print(f"Found and stored Total equity: {value}")
+                                    elif "retained earnings" in row_str and metadata["Retained Earnings"] is None:
+                                        print(f"Found row with Retained earnings: {row}")
+                                        value = get_value_from_latest_date(row, latest_date_col)
+                                        if value:
+                                            metadata["Retained Earnings"] = value
+                                            print(f"Found and stored Retained earnings: {value}")
+                        except Exception as e:
+                            print(f"Error reading {csv_path}: {e}")
+        else:
+            print(f"Directory not found: {company_parsed_dir}")
+    
+    return metadata
 
 # Load and preprocess markdown files
 def load_markdown_files(uploaded_files):
     docs = []
     for file in uploaded_files:
         content = file.read().decode("utf-8")
-        metadata = extract_metadata(content)
+        # Get the file path from the uploaded file
+        file_path = file.name
+        metadata = extract_metadata_from_structure(file_path)
+        print(f"\nMetadata for {file_path}:")
+        print(metadata)
         docs.append({"content": content, "metadata": metadata})
     return docs
 
@@ -181,4 +239,4 @@ if uploaded_files:
         # with st.spinner("Thinking..."):
             # response = agent.run(user_query)
         # st.markdown("### 📌 Answer")
-        # st.write(response)
+        # st.write(response) 

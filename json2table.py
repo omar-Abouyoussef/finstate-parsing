@@ -87,23 +87,50 @@ def extract_tables_with_smart_titles(blocks, out_dir="output_tables"):
 
 
 if __name__ == "__main__":
-    json_dir = "Statements/json"
+    base_json_dir = "Statements"
     base_output_dir = "parsed_tables"
 
-    for filename in os.listdir(json_dir):
-        if filename.endswith(".json"):
-            json_path = os.path.join(json_dir, filename)
-            name_without_ext = os.path.splitext(filename)[0]
-            output_dir = os.path.join(base_output_dir, name_without_ext)
+    # Process each country directory
+    for country_dir in os.listdir(base_json_dir):
+        country_path = os.path.join(base_json_dir, country_dir)
+        if not os.path.isdir(country_path) or country_dir.startswith('.'):
+            continue
 
-            os.makedirs(output_dir, exist_ok=True)
-            print(f"Processing: {json_path} → {output_dir}")
+        # Create country-specific output directory
+        country_output_dir = os.path.join(base_output_dir, country_dir)
+        os.makedirs(country_output_dir, exist_ok=True)
 
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    blocks = json.load(f)
-                extract_tables_with_smart_titles(blocks, out_dir=output_dir)
-            except json.JSONDecodeError as e:
-                print(f"⚠️ Failed to load {filename}: {e}")
-            except Exception as e:
-                print(f"⚠️ Error processing {filename}: {e}")
+        # Process each company directory in the country directory
+        for company_dir in os.listdir(country_path):
+            company_path = os.path.join(country_path, company_dir)
+            if not os.path.isdir(company_path) or company_dir.startswith('.'):
+                continue
+
+            # Create company-specific output directory
+            company_output_dir = os.path.join(country_output_dir, company_dir)
+            os.makedirs(company_output_dir, exist_ok=True)
+
+            # Look for JSON files in the json subdirectory
+            json_dir = os.path.join(company_path, "json")
+            if not os.path.exists(json_dir):
+                print(f"⚠️ No json directory found in {company_path}")
+                continue
+
+            # Process each JSON file in the json directory
+            for filename in os.listdir(json_dir):
+                if filename.endswith(".json"):
+                    json_path = os.path.join(json_dir, filename)
+                    name_without_ext = os.path.splitext(filename)[0]
+                    output_dir = os.path.join(company_output_dir, name_without_ext)
+
+                    os.makedirs(output_dir, exist_ok=True)
+                    print(f"Processing: {json_path} → {output_dir}")
+
+                    try:
+                        with open(json_path, "r", encoding="utf-8") as f:
+                            blocks = json.load(f)
+                        extract_tables_with_smart_titles(blocks, out_dir=output_dir)
+                    except json.JSONDecodeError as e:
+                        print(f"⚠️ Failed to load {filename}: {e}")
+                    except Exception as e:
+                        print(f"⚠️ Error processing {filename}: {e}")
